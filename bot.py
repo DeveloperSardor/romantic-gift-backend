@@ -5,9 +5,9 @@ from telegram import Bot
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import nest_asyncio
+import asyncio
+import threading
 
-nest_asyncio.apply()
 load_dotenv()
 
 logging.basicConfig(
@@ -19,25 +19,32 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 YOUR_CHAT_ID = os.getenv('CHAT_ID')
 
-bot = Bot(token=BOT_TOKEN, pool_timeout=30, connection_pool_size=8)
+bot = Bot(token=BOT_TOKEN)
 
 app = Flask(__name__)
 CORS(app)
 
-def send_telegram_message_sync(chat_id: str, message: str):
-    try:
-        import asyncio
-        loop = asyncio.get_event_loop()
-        
-        async def send():
-            await bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
-        
-        loop.run_until_complete(send())
-        logger.info(f"Message sent to {chat_id}")
-        return True
-    except Exception as e:
-        logger.error(f"Error sending message: {e}")
-        return False
+def send_telegram_in_thread(chat_id: str, message: str):
+    """Send message in separate thread with new event loop"""
+    def run_async():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(
+                bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
+            )
+            logger.info(f"Message sent to {chat_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            return False
+        finally:
+            loop.close()
+    
+    thread = threading.Thread(target=run_async)
+    thread.start()
+    thread.join(timeout=10)
+    return True
 
 def get_address_from_coordinates(lat, lon):
     try:
@@ -137,14 +144,15 @@ def notify():
 """
             
             # Add GPS info if available
-            if has_gps:
+            if has_gps and gps_lat and gps_lon:
+                accuracy_text = f"±{int(gps_accuracy)}м" if gps_accuracy else "N/A"
                 message += f"""
 <b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
 
 🏠 <b>Адрес:</b> {gps_address_info['short']}
 
 📍 <b>Координаты:</b> <code>{gps_lat}, {gps_lon}</code>
-🎯 <b>Точность:</b> ±{int(gps_accuracy)}м
+🎯 <b>Точность:</b> {accuracy_text}
 🗺 <a href="{gps_maps_link}">Google Maps</a> | <a href="{gps_yandex_link}">Yandex Maps</a>
 
 <i>Полный GPS адрес:</i>
@@ -171,14 +179,15 @@ IP: <code>{ip}</code>
 """
             
             # Add GPS info if available
-            if has_gps:
+            if has_gps and gps_lat and gps_lon:
+                accuracy_text = f"±{int(gps_accuracy)}м" if gps_accuracy else "N/A"
                 message += f"""
 <b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
 
 🏠 <b>Адрес:</b> {gps_address_info['short']}
 
 📍 <b>Координаты:</b> <code>{gps_lat}, {gps_lon}</code>
-🎯 <b>Точность:</b> ±{int(gps_accuracy)}м
+🎯 <b>Точность:</b> {accuracy_text}
 🗺 <a href="{gps_maps_link}">Google Maps</a> | <a href="{gps_yandex_link}">Yandex Maps</a>
 
 <i>Полный GPS адрес:</i>
@@ -203,7 +212,7 @@ IP: <code>{ip}</code>
 <i>⚠️ IP показывает местоположение провайдера, не точный адрес</i>
 """
         
-        result = send_telegram_message_sync(YOUR_CHAT_ID, message)
+        result = send_telegram_in_thread(YOUR_CHAT_ID, message)
         
         if result:
             return jsonify({'success': True, 'message': 'Notification sent'}), 200
