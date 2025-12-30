@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 # Bot configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 YOUR_CHAT_ID = os.getenv('CHAT_ID')
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # https://romantic-gift-backend.onrender.com
 
 # Initialize bot
 bot = Bot(token=BOT_TOKEN)
@@ -59,7 +58,7 @@ async def send_notification(chat_id: str, message: str):
         return False
 
 def get_address_from_coordinates(lat, lon):
-    """Convert coordinates to readable address using Nominatim (OpenStreetMap)"""
+    """Convert coordinates to readable address"""
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
         headers = {'User-Agent': 'RomanticGiftApp/1.0'}
@@ -113,18 +112,6 @@ def get_address_from_coordinates(lat, lon):
             'full': 'Ошибка определения адреса',
             'success': False
         }
-
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
-async def webhook():
-    """Handle incoming Telegram updates via webhook"""
-    try:
-        json_data = request.get_json()
-        update = Update.de_json(json_data, bot)
-        await telegram_app.process_update(update)
-        return 'OK', 200
-    except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-        return 'Error', 500
 
 @app.route('/api/notify', methods=['POST'])
 def notify():
@@ -197,49 +184,18 @@ def health():
     """Health check endpoint"""
     return jsonify({'status': 'ok', 'bot': 'running'}), 200
 
-@app.route('/set_webhook', methods=['GET'])
-async def set_webhook_route():
-    """Manually set webhook (for testing)"""
-    try:
-        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
-        await bot.set_webhook(url=webhook_url)
-        return jsonify({'status': 'Webhook set', 'url': webhook_url}), 200
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-async def setup_webhook():
-    """Setup webhook on startup"""
-    try:
-        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
-        await bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
-    except Exception as e:
-        logger.error(f"Failed to set webhook: {e}")
-
 def main():
-    """Main function"""
+    """Main function - WEBHOOK YO'Q, FAQAT FLASK"""
     global telegram_app
     
-    # Create the Application without running polling
-    telegram_app = Application.builder().token(BOT_TOKEN).build()
-    telegram_app.add_handler(CommandHandler("start", start))
-    
-    # Setup webhook
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(setup_webhook())
-    loop.close()
-    
-    logger.info("Bot is starting with webhook...")
-    logger.info(f"Webhook URL: {WEBHOOK_URL}/{BOT_TOKEN}")
+    # Telegram botni o'chirish (webhook/polling yo'q)
+    logger.info("Starting Flask server without Telegram polling...")
+    logger.info("Bot will only respond to /api/notify requests")
     logger.info(f"Your Chat ID: {YOUR_CHAT_ID}")
     
-    # Run Flask
+    # Faqat Flask serverni ishga tushirish
     port = int(os.getenv('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
 
 if __name__ == '__main__':
     main()
-
-
-# WEBHOOK_URL = https://romantic-gift-backend.onrender.com
