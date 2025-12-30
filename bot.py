@@ -1,12 +1,12 @@
 import os
 import logging
 import requests
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Bot
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Load environment variables
 load_dotenv()
@@ -29,28 +29,28 @@ bot = Bot(token=BOT_TOKEN)
 app = Flask(__name__)
 CORS(app)
 
-# Store bot application globally
-telegram_app = None
+# Thread pool for async tasks
+executor = ThreadPoolExecutor(max_workers=3)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command"""
-    await update.message.reply_text(
-        '🎁 Романтический Бот активирован!\n\n'
-        'Этот бот будет отправлять вам уведомления когда Хилола:\n'
-        '• Открывает страницу\n'
-        '• Вводит адрес\n'
-        '• Пропускает адрес\n\n'
-        f'Ваш Chat ID: {update.effective_chat.id}'
-    )
-
-async def send_notification(chat_id: str, message: str):
-    """Send notification to Telegram"""
+def send_telegram_message(chat_id: str, message: str):
+    """Synchronous wrapper for sending Telegram messages"""
     try:
-        await bot.send_message(
-            chat_id=chat_id,
-            text=message,
-            parse_mode='HTML'
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        # Send message
+        result = loop.run_until_complete(
+            bot.send_message(
+                chat_id=chat_id,
+                text=message,
+                parse_mode='HTML'
+            )
         )
+        
+        # Close loop properly
+        loop.close()
+        
         logger.info(f"Message sent to {chat_id}")
         return True
     except Exception as e:
@@ -165,10 +165,9 @@ def notify():
 {address_info['full']}
         """
         
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(send_notification(YOUR_CHAT_ID, message))
-        loop.close()
+        # Send message in thread pool to avoid blocking
+        future = executor.submit(send_telegram_message, YOUR_CHAT_ID, message)
+        result = future.result(timeout=10)  # Wait max 10 seconds
         
         if result:
             return jsonify({'success': True, 'message': 'Notification sent'}), 200
@@ -185,17 +184,14 @@ def health():
     return jsonify({'status': 'ok', 'bot': 'running'}), 200
 
 def main():
-    """Main function - WEBHOOK YO'Q, FAQAT FLASK"""
-    global telegram_app
-    
-    # Telegram botni o'chirish (webhook/polling yo'q)
-    logger.info("Starting Flask server without Telegram polling...")
-    logger.info("Bot will only respond to /api/notify requests")
+    """Main function"""
+    logger.info("Starting Flask server...")
+    logger.info("Bot will respond to /api/notify requests")
     logger.info(f"Your Chat ID: {YOUR_CHAT_ID}")
     
-    # Faqat Flask serverni ishga tushirish
+    # Run Flask
     port = int(os.getenv('PORT', 10000))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
 
 if __name__ == '__main__':
     main()
